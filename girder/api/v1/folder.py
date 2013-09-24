@@ -58,8 +58,7 @@ class Folder(Resource):
 
         if 'text' in params:
             return self.model('folder').search(
-                params['text'], user=user, offset=offset, limit=limit,
-                sort=sort)
+                params['text'], user=user, offset=offset, limit=limit)
         elif 'parentId' in params and 'parentType' in params:
             parentType = params['parentType'].lower()
             if not parentType in ('collection', 'folder', 'user'):

@@ -38,6 +38,8 @@ class Model(ModelImporter):
     def __init__(self):
         self.name = None
         self._indices = []
+        self._textIndex = None
+
         self.initialize()
 
         assert type(self.name) == str
@@ -48,13 +50,26 @@ class Model(ModelImporter):
             dbName = '%s_test' % db_cfg['database']
         else:
             dbName = db_cfg['database']  # pragma: no cover
-        self.collection = db_connection[dbName][self.name]
+        self.database = db_connection[dbName]
+        self.collection = self.database[self.name]
 
         assert isinstance(self.collection, pymongo.collection.Collection)
         assert type(self._indices) == list
 
         for index in self._indices:
             self.collection.ensure_index(index)
+
+        if type(self._textIndex) is dict:
+            textIdx = [(k, 'text') for k in self._textIndex.keys()]
+            self.collection.ensure_index(textIdx, weights=self._textIndex)
+
+    def ensureTextIndex(self, index):
+        """
+        Call this during initialize() of the subclass if you want your model to
+        have a full-text searchable index. Each collection may have zero or
+        one full-text index.
+        """
+        self._textIndex = index
 
     def ensureIndices(self, indices):
         """
@@ -103,6 +118,23 @@ class Model(ModelImporter):
         """
         return self.collection.find(spec=query, fields=fields, skip=offset,
                                     limit=limit, sort=sort)
+
+    def textSearch(self, query, project):
+        """
+        Perform a full-text search against the text index for this collection.
+        Only call this on models that have declared a text index using
+        ensureTextIndex.
+
+        :param query: The text query. Will be stemmed internally.
+        :type query: str
+        :param project: Project results onto this dictionary.
+        :type project: dict
+        :returns: The result list. Filtering by permission or any other
+                  parameters is left to the caller.
+        """
+        resp = self.database.command("text", self.name, search=query,
+                                     project=project)
+        return resp['results']
 
     def save(self, document, validate=True):
         """
@@ -393,21 +425,38 @@ class AccessControlledModel(Model):
         :type level: AccessType
         :param limit: The max size of the result set.
         :param offset: The offset into the result set.
+        :param key: If you pass in a list instead of a cursor object, set this
+                    to the value in each list item to filter by
         """
-        count = skipped = 0
+        cursor.skip(offset)
+        count = 0
         results = []
         for result in cursor:
-            if self.hasAccess(result, user=user, level=level):
-                if skipped < offset:
-                    skipped += 1
-                else:
-                    results.append(result)
-                    count += 1
-            if count == limit:
+            if count >= limit:
                 break
+            if self.hasAccess(result, user=user, level=level):
+                results.append(result)
+                count += 1
 
         return results
 
+    def filterSearchResults(self, results, user, level=AccessType.READ,
+                            limit=20):
+        """
+        Filter search result list by permissions.
+        """
+        count = 0
+        filtered = []
+        for result in results:
+            if count >= limit:
+                break
+            obj = result['obj']
+            if self.hasAccess(result['obj'], user=user, level=level):
+                obj.pop('access', None)
+                filtered.append(obj)
+                count += 1
+
+        return filtered
 
 class AccessException(Exception):
     """
